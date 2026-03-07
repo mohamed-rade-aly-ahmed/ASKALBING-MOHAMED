@@ -1,6 +1,6 @@
 # =============================================
-# جميع المكتبات لـ Telegram Bots + بوتات تقنية + كريبتو 2026
-# محدثة ومصححة دلوقتي - ارفعها وهتشتغل 100%
+# requirements.txt - قالب أساسيات مستقر 2026
+# لكل بوتات تليجرام + تقنية + كريبتو (بدون أخطاء تثبيت)
 # =============================================
 
 # ================== Telegram Bot Core ==================
@@ -9,47 +9,27 @@ aiogram
 pyTelegramBotAPI
 pyrogram
 telethon
-telegram
-telepot
 
 # ================== Async & HTTP ==================
 aiohttp
 httpx
 requests
-tornado
 uvicorn
-quart
+tornado
 
 # ================== Web Frameworks ==================
 flask
 fastapi
-django
-jinja2
-
-# ================== Scraping & Automation ==================
-beautifulsoup4
-lxml
-scrapy
-selenium
-webdriver-manager
-pyautogui
-schedule
-APScheduler
 
 # ================== Data & AI ==================
 pandas
 numpy
-polars
 matplotlib
 seaborn
 pillow
 openai
 anthropic
 google-generativeai
-langchain
-transformers
-torch
-scikit-learn
 
 # ================== Database ==================
 sqlalchemy
@@ -58,10 +38,8 @@ psycopg2-binary
 pymongo
 redis
 
-# ================== Crypto & Trading (مصحح) ==================
+# ================== Crypto & Trading (مستقر) ==================
 ccxt
-pandas-ta
-TA-Lib
 python-binance
 
 # ================== Utilities & Security ==================
@@ -71,9 +49,8 @@ pytz
 python-dateutil
 tqdm
 rich
-celery
-pytesseract
+APScheduler
+schedule
 
 # ================== Extras ==================
-apscheduler
 httpx[http2]
