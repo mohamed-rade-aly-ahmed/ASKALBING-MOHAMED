@@ -1,56 +1,24 @@
 # =============================================
-# requirements.txt - قالب أساسيات مستقر 2026
-# لكل بوتات تليجرام + تقنية + كريبتو (بدون أخطاء تثبيت)
+# requirements.txt - ابوراضي الأسطوره Trading Bot v3.2
+# Optimized & Stable - مارس 2026
 # =============================================
 
-# ================== Telegram Bot Core ==================
-python-telegram-bot
-aiogram
-pyTelegramBotAPI
-pyrogram
-telethon
+# ================== الرئيسية (مطلوبة 100%) ==================
+pyTelegramBotAPI>=4.18.0
+ccxt>=4.3.0
+python-dotenv>=1.0.1
 
-# ================== Async & HTTP ==================
-aiohttp
-httpx
-requests
-uvicorn
-tornado
+# ================== تحسين الأداء والجدولة ==================
+APScheduler>=3.10.4
 
-# ================== Web Frameworks ==================
-flask
-fastapi
+# ================== تجميل الـ Console ==================
+rich>=13.7.0
 
-# ================== Data & AI ==================
-pandas
-numpy
-matplotlib
-seaborn
-pillow
-openai
-anthropic
-google-generativeai
+# ================== التوقيت والتاريخ ==================
+pytz>=2024.1
+python-dateutil>=2.9.0
 
-# ================== Database ==================
-sqlalchemy
-pymysql
-psycopg2-binary
-pymongo
-redis
-
-# ================== Crypto & Trading (مستقر) ==================
-ccxt
-python-binance
-
-# ================== Utilities & Security ==================
-python-dotenv
-cryptography
-pytz
-python-dateutil
-tqdm
-rich
-APScheduler
-schedule
-
-# ================== Extras ==================
-httpx[http2]
+# ================== اختياري (لو حابب تستخدمهم في المستقبل) ==================
+# pandas>=2.2.0          # لو رجعت تستخدم pandas
+# numpy>=1.26.0
+# requests>=2.32.0
