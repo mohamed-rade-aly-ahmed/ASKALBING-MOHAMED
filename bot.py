@@ -21,7 +21,7 @@ FIXED_TRADE_USDT = 5       # 5$ لكل صفقة
 MAX_POSITIONS = 10         # 10 صفقات متزامنة
 BATCH_SIZE = 10            # يفحص 10 عملات في كل مرة
 
-# كل العملات (مختارة للسرعة)
+# العملات (كل القائمة)
 COINS = [
 "BTC","ETH","SOL","ADA","AVAX","MATIC","NEAR","INJ","ARB","OP",
 "SUI","APT","SEI","TIA","FET","RNDR","AGIX","OCEAN","IMX","STX",
@@ -276,11 +276,13 @@ def start(msg):
     
     bot.send_message(msg.chat.id,
         format_message("ULTIMATE BOT 3M",
-            "✅ النظام يعمل\n⚡ سكalp سريع 3 دقائق\n💰 صفقة: 5$\n🎯 أقصى: 10 صفقات"),
+            "✅ النظام يعمل\n⚡ سكالب سريع 3 دقائق\n💰 صفقة: 5$\n🎯 أقصى: 10 صفقات"),
         reply_markup=markup)
 
 @bot.message_handler(func=lambda m: True)
 def commands(msg):
+    global bot_running  # ✅ تم التعديل: global في أول الدالة
+    
     if msg.chat.id != USER_ID:
         return
     
@@ -331,7 +333,6 @@ def commands(msg):
                 f"تم بيع {count} مركز\nمن أصل {len(positions)}"))
     
     elif text == "📈 الإحصائيات":
-        # حساب أداء اليوم
         today = datetime.now().date()
         bot.send_message(msg.chat.id,
             format_message("📈 إحصائيات",
@@ -342,7 +343,6 @@ def commands(msg):
                 f"📅 تاريخ التشغيل: {today}"))
     
     elif text == "⏸ إيقاف/تشغيل":
-        global bot_running
         bot_running = not bot_running
         status = "✅ يعمل" if bot_running else "⏸ متوقف"
         bot.send_message(msg.chat.id,
