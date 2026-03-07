@@ -1,6 +1,6 @@
 # =============================================
-# جميع المكتبات لـ Telegram Bots + بوتات تقنية 2026
-# ارفع الملف ده على جيت هوب واستخدمه في كل مشاريعك
+# جميع المكتبات لـ Telegram Bots + بوتات تقنية + كريبتو 2026
+# محدثة خصيصاً لك يا محمد - ارفعها دلوقتي على جيت هوب
 # =============================================
 
 # ================== Telegram Bot Core ==================
@@ -20,7 +20,7 @@ tornado
 uvicorn
 quart
 
-# ================== Web Frameworks (لـ Webhooks) ==================
+# ================== Web Frameworks ==================
 flask
 fastapi
 django
@@ -58,6 +58,14 @@ psycopg2-binary
 pymongo
 redis
 
+# ================== Crypto & Trading (الجديدة دلوقتي) ==================
+ccxt
+ccxt.pro
+pandas-ta
+TA-Lib
+python-binance
+ccxt[async]
+
 # ================== Utilities & Security ==================
 python-dotenv
 cryptography
@@ -68,16 +76,6 @@ rich
 celery
 pytesseract
 
-# ================== Extras & Dependencies ==================
+# ================== Extras ==================
 apscheduler
-webhooks
-job-queue
 httpx[http2]
-
-# ================== Optional (لو عايز تضيف) ==================
-# discord.py
-# telebot
-# pyrogram[fast]
-# langchain-community
-# gradio
-# streamlit
