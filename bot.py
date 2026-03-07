@@ -5,8 +5,9 @@ import pandas as pd
 import time
 import threading
 from datetime import datetime
+from collections import deque
 
-# ================== إعدادات البيئة ==================
+# ================== ⚙️ إعدادات البيئة ==================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 API_KEY = os.getenv("MEXC_API_KEY")
 SECRET = os.getenv("MEXC_SECRET")
@@ -15,20 +16,21 @@ USER_ID = int(os.getenv("MY_USER_ID"))
 if not all([TELEGRAM_TOKEN, API_KEY, SECRET, USER_ID]):
     raise Exception("❌ تأكد من ضبط متغيرات البيئة")
 
-# ================== إعدادات التداول ==================
-TIMEFRAME = '3m'           # سكالب سريع
-FIXED_TRADE_USDT = 5       # 5$ لكل صفقة
-MAX_POSITIONS = 10         # 10 صفقات متزامنة
-BATCH_SIZE = 10            # يفحص 10 عملات في كل مرة
+# ================== 📊 إعدادات التداول ==================
+TIMEFRAME = '3m'           # ⏱ سكالب سريع
+FIXED_TRADE_USDT = 5       # 💰 5$ لكل صفقة
+MAX_POSITIONS = 10         # 🔢 أقصى 10 صفقات متزامنة
+BATCH_SIZE = 10            # 🔍 يفحص 10 عملات في كل دفعة
+MIN_BALANCE = 20           # 💳 الحد الأدنى للرصيد
 
-# العملات (كل القائمة)
+# ================== 🪙 قائمة العملات ==================
 COINS = [
-"BTC","ETH","SOL","ADA","AVAX","MATIC","NEAR","INJ","ARB","OP",
-"SUI","APT","SEI","TIA","FET","RNDR","AGIX","OCEAN","IMX","STX",
-"PEPE","BONK","WIF","ORDI","PYTH","JUP","ONDO","PENDLE"
+    "BTC", "ETH", "SOL", "ADA", "AVAX", "MATIC", "NEAR", "INJ", "ARB", "OP",
+    "SUI", "APT", "SEI", "TIA", "FET", "RNDR", "AGIX", "OCEAN", "IMX", "STX",
+    "PEPE", "BONK", "WIF", "ORDI", "PYTH", "JUP", "ONDO", "PENDLE"
 ]
 
-# ================== تهيئة البوت ==================
+# ================== 🤖 تهيئة البوت ==================
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 exchange = ccxt.mexc({
@@ -40,41 +42,78 @@ exchange = ccxt.mexc({
 
 exchange.load_markets()
 
-positions = {}
+# ================== 📁 إدارة البيانات ==================
+positions = {}  # المراكز المفتوحة
 bot_running = True
 total_pnl = 0.0
+trade_history = deque(maxlen=100)  # سجل آخر 100 صفقة
+stats = {
+    'total_trades': 0,
+    'winning_trades': 0,
+    'losing_trades': 0,
+    'total_profit': 0.0
+}
 
-# ================== أدوات مساعدة ==================
+# ================== 💎 أدوات مساعدة ==================
 def get_balance():
+    """الحصول على الرصيد"""
     try:
         balance = exchange.fetch_balance()
-        return balance['free'].get('USDT', 0)
-    except:
-        return 0
+        return float(balance['free'].get('USDT', 0))
+    except Exception as e:
+        print(f"Balance Error: {e}")
+        return 0.0
 
-def format_message(title, body):
+def format_message(title, body, emoji="🚀"):
+    """تنسيق رسالة حديثة"""
     return f"""
-╔══════════════════════╗
-║   🚀 {title}
-╠══════════════════════╣
-{body}
-╚══════════════════════╝
+╔══════════════════════════════════╗
+║  {emoji} *{title}* 
+╠══════════════════════════════════╣
+║
+║  {body}
+║
+╚══════════════════════════════════╝
 """
 
-# ================== فلتر السوق (BTC) ==================
+def format_table(data):
+    """تنسيق جدول"""
+    if not data:
+        return "📭 لا توجد بيانات"
+    
+    result = "```\n"
+    result += f"{'العملة':<8} {'الدخول':<10} {'الآن':<10} {'الربح':<8}\n"
+    result += "─" * 40 + "\n"
+    
+    for symbol, pos in data.items():
+        try:
+            ticker = exchange.fetch_ticker(f"{symbol}/USDT")
+            current = ticker['last']
+            profit = ((current - pos['entry']) / pos['entry']) * 100
+            result += f"{symbol:<8} {pos['entry']:<10.4f} {current:<10.4f} {profit:>+6.2f}%\n"
+        except:
+            result += f"{symbol:<8} {'—':<10} {'—':<10} {'—':<8}\n"
+    
+    result += "```"
+    return result
+
+# ================== 🔍 فلتر السوق ==================
 def market_safe():
-    """يتحقق أن BTC فوق EMA200"""
+    """التحقق من اتجاه BTC"""
     try:
         ohlcv = exchange.fetch_ohlcv("BTC/USDT", '5m', limit=50)
         df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
         df['ema200'] = df['c'].ewm(span=200).mean()
-        return df.iloc[-1].c > df.iloc[-1].ema200
-    except:
+        current_price = df['c'].iloc[-1]
+        ema200 = df['ema200'].iloc[-1]
+        return current_price > ema200
+    except Exception as e:
+        print(f"Market Safe Error: {e}")
         return False
 
-# ================== حساب قوة الزخم ==================
+# =================️ ⚡ حساب قوة الزخم ==================
 def momentum_score(symbol):
-    """يحسب قوة الاختراق"""
+    """حساب نقاط الزخم للعملة"""
     try:
         ohlcv = exchange.fetch_ohlcv(f"{symbol}/USDT", TIMEFRAME, limit=30)
         df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
@@ -82,58 +121,98 @@ def momentum_score(symbol):
         if len(df) < 5:
             return 0
         
-        # تغير السعر آخر 3 شموع
-        change = ((df['c'].iloc[-1] - df['c'].iloc[-3]) / df['c'].iloc[-3]) * 100
+        # تغير السعر في آخر 3 شموع
+        price_change = ((df['c'].iloc[-1] - df['c'].iloc[-3]) / df['c'].iloc[-3]) * 100
         
         # انفجار الحجم
         vol_avg = df['v'].rolling(10).mean().iloc[-1]
-        vol_spike = df['v'].iloc[-1] / vol_avg if vol_avg > 0 else 1
+        current_vol = df['v'].iloc[-1]
+        volume_spike = current_vol / vol_avg if vol_avg > 0 else 1
         
-        return change * vol_spike
-    except:
+        # النقاط = التغير × الانفجار
+        score = price_change * volume_spike
+        return score
+    except Exception as e:
+        print(f"Momentum Score Error {symbol}: {e}")
         return 0
 
-# ================== إدارة الصفقات ==================
+# ================== 💼 إدارة الصفقات ==================
 def calculate_sl_tp(price):
-    """SL 3% / TP 6%"""
-    sl = price * 0.97
-    tp = price * 1.06
+    """حساب SL و TP"""
+    sl = price * 0.97  # 3% stop loss
+    tp = price * 1.06  # 6% take profit
     return sl, tp
 
 def execute_buy(symbol, price, amount):
-    """تنفيذ شراء"""
+    """تنفيذ أمر شراء"""
     try:
+        # التحقق من الحد الأدنى
+        market = exchange.market(f"{symbol}/USDT")
+        min_amount = market['limits']['amount']['min']
+        if amount < min_amount:
+            print(f"Amount too small for {symbol}: {amount} < {min_amount}")
+            return False
+        
         exchange.create_market_buy_order(f"{symbol}/USDT", amount)
         sl, tp = calculate_sl_tp(price)
+        
         positions[symbol] = {
             "entry": price,
             "sl": sl,
             "tp": tp,
             "size": amount,
-            "entry_time": datetime.now()
+            "entry_time": datetime.now(),
+            "trailing_level": None
         }
+        
+        # تحديث الإحصائيات
+        stats['total_trades'] += 1
+        
         return True
     except Exception as e:
         print(f"Buy Error {symbol}: {e}")
         return False
 
-def execute_sell(symbol, price, size):
-    """تنفيذ بيع"""
+def execute_sell(symbol, price, size, reason="manual"):
+    """تنفيذ أمر بيع"""
     try:
         exchange.create_market_sell_order(f"{symbol}/USDT", size)
+        
         if symbol in positions:
             entry = positions[symbol]['entry']
-            profit = ((price - entry) / entry) * 100
+            profit_pct = ((price - entry) / entry) * 100
+            profit_usd = (price - entry) * size
+            
+            # تحديث الإحصائيات
+            stats['total_profit'] += profit_usd
+            if profit_pct > 0:
+                stats['winning_trades'] += 1
+            else:
+                stats['losing_trades'] += 1
+            
+            # إضافة للسجل
+            trade_history.append({
+                'symbol': symbol,
+                'side': 'SELL',
+                'price': price,
+                'size': size,
+                'profit_pct': profit_pct,
+                'profit_usd': profit_usd,
+                'reason': reason,
+                'timestamp': datetime.now()
+            })
+            
             positions.pop(symbol, None)
-            return True, profit
-        return True, 0
+            return True, profit_pct, profit_usd
+        
+        return True, 0, 0
     except Exception as e:
         print(f"Sell Error {symbol}: {e}")
-        return False, 0
+        return False, 0, 0
 
-# ================== مراقبة المراكز ==================
+# ================== 👁‍🗨 مراقبة المراكز ==================
 def monitor():
-    """يراقب المراكز ويطبق SL/TP/Trailing"""
+    """مراقبة المراكز وتطبيق SL/TP/Trailing"""
     global total_pnl
     
     while True:
@@ -153,28 +232,41 @@ def monitor():
                     tp = pos['tp']
                     size = pos['size']
                     
-                    profit = ((price - entry) / entry) * 100
+                    profit_pct = ((price - entry) / entry) * 100
                     
-                    # Trailing Stop Logic
-                    if profit >= 2:
-                        new_sl = entry * 1.01
-                        if new_sl > sl:
-                            pos['sl'] = new_sl
+                    # 🔄 Trailing Stop Logic
+                    if profit_pct >= 2 and pos['trailing_level'] is None:
+                        pos['trailing_level'] = entry * 1.01
+                        pos['sl'] = pos['trailing_level']
                     
-                    if profit >= 4:
+                    if profit_pct >= 4 and pos['trailing_level']:
                         new_sl = entry * 1.03
-                        if new_sl > sl:
+                        if new_sl > pos['trailing_level']:
+                            pos['trailing_level'] = new_sl
                             pos['sl'] = new_sl
                     
-                    # Exit Conditions
-                    if price <= pos['sl'] or price >= tp:
-                        success, pnl = execute_sell(symbol, price, size)
+                    # 🚪 شروط الخروج
+                    if price <= pos['sl']:
+                        success, pnl, _ = execute_sell(symbol, price, size, "SL")
                         if success:
                             total_pnl += pnl
-                            status = "✅ TP" if price >= tp else "🛑 SL"
                             bot.send_message(USER_ID, 
-                                format_message(status,
-                                    f"{symbol}\nالسعر: {price:.4f}\nالربح: {pnl:.2f}%"))
+                                format_message("🛑 *Stop Loss*",
+                                    f"`{symbol}`\n"
+                                    f"💰 السعر: `{price:.4f}`\n"
+                                    f"📉 الخسارة: `{pnl:.2f}%`\n"
+                                    f"💸 المبلغ: `{pnl * size:.2f}$`"))
+                    
+                    elif price >= tp:
+                        success, pnl, _ = execute_sell(symbol, price, size, "TP")
+                        if success:
+                            total_pnl += pnl
+                            bot.send_message(USER_ID,
+                                format_message("✅ *Take Profit*",
+                                    f"`{symbol}`\n"
+                                    f"💰 السعر: `{price:.4f}`\n"
+                                    f"📈 الربح: `{pnl:.2f}%`\n"
+                                    f"💸 المبلغ: `{pnl * size:.2f}$`"))
                             
                 except Exception as e:
                     print(f"Monitor Error {symbol}: {e}")
@@ -184,32 +276,32 @@ def monitor():
         
         time.sleep(3)
 
-# ================== ماسح الإشارات ==================
+# ================== 🔎 ماسح الإشارات ==================
 def scanner():
-    """يبحث عن إشارات الشراء"""
+    """البحث عن إشارات الشراء"""
     while True:
         if not bot_running:
             time.sleep(10)
             continue
         
         try:
-            # حد أقصى للمراكز
+            # 🔒 حد أقصى للمراكز
             if len(positions) >= MAX_POSITIONS:
                 time.sleep(10)
                 continue
             
-            # فلتر السوق (BTC يجب أن يكون فوق EMA200)
+            # 🌐 فلتر السوق (BTC)
             if not market_safe():
                 time.sleep(30)
                 continue
             
-            # التحقق من الرصيد
+            # 💳 التحقق من الرصيد
             balance = get_balance()
-            if balance < 20:
+            if balance < MIN_BALANCE:
                 time.sleep(30)
                 continue
             
-            # جمع نقاط كل العملات (على دفعات)
+            # 📊 جمع نقاط العملات
             scores = []
             
             for i in range(0, len(COINS), BATCH_SIZE):
@@ -220,17 +312,18 @@ def scanner():
                         continue
                     try:
                         score = momentum_score(coin)
-                        scores.append((coin, score))
+                        if score > 0:  # فقط الإشارات الإيجابية
+                            scores.append((coin, score))
                     except:
                         continue
                 
                 time.sleep(1)  # تجنب Rate Limit
             
-            # اختيار أقوى 3 عملات فقط
+            # 🏆 اختيار أقوى 3 عملات
             scores.sort(key=lambda x: x[1], reverse=True)
-            top_coins = [c[0] for c in scores[:3] if c[1] > 0]
+            top_coins = [c[0] for c in scores[:3]]
             
-            # محاولة الشراء
+            # 🛒 محاولة الشراء
             for coin in top_coins:
                 if len(positions) >= MAX_POSITIONS:
                     break
@@ -247,8 +340,11 @@ def scanner():
                     if amount >= min_amount:
                         if execute_buy(coin, price, amount):
                             bot.send_message(USER_ID,
-                                format_message("🟢 شراء",
-                                    f"{coin}\nالسعر: {price:.4f}\nالكمية: {amount:.6f}"))
+                                format_message("🟢 *شراء جديد*",
+                                    f"`{coin}`\n"
+                                    f"💵 السعر: `{price:.4f}`\n"
+                                    f"🔢 الكمية: `{amount:.6f}`\n"
+                                    f"📊 القيمة: `{FIXED_TRADE_USDT}$`"))
                             time.sleep(2)
                             
                 except Exception as e:
@@ -259,104 +355,177 @@ def scanner():
         
         time.sleep(15)
 
-# ================== أوامر التليجرام ==================
-@bot.message_handler(commands=['start'])
+# ================== 🤝 أوامر التليجرام ==================
+@bot.message_handler(commands=['start', 'menu'])
 def start(msg):
+    """عرض القائمة الرئيسية"""
     if msg.chat.id != USER_ID:
         return
     
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
-        telebot.types.KeyboardButton("📊 الحالة"),
-        telebot.types.KeyboardButton("💰 المراكز"),
-        telebot.types.KeyboardButton("🚨 بيع الكل"),
-        telebot.types.KeyboardButton("📈 الإحصائيات"),
-        telebot.types.KeyboardButton("⏸ إيقاف/تشغيل")
+        telebot.types.KeyboardButton("📊 *الحالة*"),
+        telebot.types.KeyboardButton("💰 *المراكز*"),
+        telebot.types.KeyboardButton("📈 *الإحصائيات*"),
+        telebot.types.KeyboardButton("📜 *السجل*"),
+        telebot.types.KeyboardButton("🚨 *بيع الكل*"),
+        telebot.types.KeyboardButton("⏸ *إيقاف/تشغيل*")
     )
     
     bot.send_message(msg.chat.id,
-        format_message("ULTIMATE BOT 3M",
-            "✅ النظام يعمل\n⚡ سكالب سريع 3 دقائق\n💰 صفقة: 5$\n🎯 أقصى: 10 صفقات"),
-        reply_markup=markup)
+        format_message("🤖 *ULTIMATE BOT 3M*",
+            "✅ النظام يعمل بكفاءة\n"
+            "⚡ سكالب سريع على 3 دقائق\n"
+            f"💰 قيمة الصفقة: `{FIXED_TRADE_USDT}$`\n"
+            f"🎯 أقصى مراكز: `{MAX_POSITIONS}`\n"
+            f"📊 العملات: `{len(COINS)}` عملة\n"
+            "🔄 فلتر BTC: `✅`\n"
+            "📈 Trailing: `✅`"),
+        reply_markup=markup,
+        parse_mode='Markdown')
 
 @bot.message_handler(func=lambda m: True)
 def commands(msg):
-    global bot_running  # ✅ تم التعديل: global في أول الدالة
+    """معالجة الأوامر"""
+    global bot_running
     
     if msg.chat.id != USER_ID:
         return
     
-    text = msg.text
+    text = msg.text.strip().replace('*', '')
     
     if text == "📊 الحالة":
         balance = get_balance()
+        status = "✅ يعمل" if bot_running else "⏸ متوقف"
+        market_status = "🟢 صاعد" if market_safe() else "🔴 هابط"
+        
         bot.send_message(msg.chat.id,
-            format_message("📊 الحالة",
-                f"💰 الرصيد: {balance:.2f} USDT\n📈 المراكز: {len(positions)}/10\n🚀 البوت: {'يعمل' if bot_running else 'متوقف'}"))
+            format_message("📊 *حالة البوت*",
+                f"💳 الرصيد: `{balance:.2f} USDT`\n"
+                f"📈 المراكز: `{len(positions)}/{MAX_POSITIONS}`\n"
+                f"🚀 البوت: `{status}`\n"
+                f"📉 اتجاه BTC: `{market_status}`\n"
+                f"💰 الربح الكلي: `{total_pnl:.2f}$`"),
+            parse_mode='Markdown')
     
     elif text == "💰 المراكز":
         if not positions:
-            bot.send_message(msg.chat.id, "❌ لا توجد مراكز مفتوحة")
+            bot.send_message(msg.chat.id,
+                format_message("💰 *المراكز*", "📭 لا توجد مراكز مفتوحة"))
             return
         
-        msg_text = ""
-        for symbol, pos in positions.items():
-            try:
-                ticker = exchange.fetch_ticker(f"{symbol}/USDT")
-                current = ticker['last']
-                profit = ((current - pos['entry']) / pos['entry']) * 100
-                msg_text += f"{symbol}: {profit:+.2f}%\n"
-            except:
-                msg_text += f"{symbol}: --\n"
-        
+        table = format_table(positions)
         bot.send_message(msg.chat.id,
-            format_message("💰 المراكز المفتوحة", msg_text))
+            format_message("💰 *المراكز المفتوحة*", table),
+            parse_mode='Markdown')
     
     elif text == "🚨 بيع الكل":
         if not positions:
-            bot.send_message(msg.chat.id, "❌ لا توجد مراكز لبيعها")
+            bot.send_message(msg.chat.id,
+                format_message("🚨 *بيع الكل*", "❌ لا توجد مراكز لبيعها"))
             return
         
-        count = 0
-        for symbol in list(positions.keys()):
-            try:
-                ticker = exchange.fetch_ticker(f"{symbol}/USDT")
-                size = positions[symbol]['size']
-                success, _ = execute_sell(symbol, ticker['last'], size)
-                if success:
-                    count += 1
-            except:
-                pass
+        # تأكيد
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(
+            telebot.types.InlineKeyboardButton("✅ نعم، بيع الكل", callback_data="sell_all_confirm"),
+            telebot.types.InlineKeyboardButton("❌ إلغاء", callback_data="sell_all_cancel")
+        )
         
         bot.send_message(msg.chat.id,
-            format_message("🚨 بيع الكل",
-                f"تم بيع {count} مركز\nمن أصل {len(positions)}"))
+            format_message("🚨 *تأكيد بيع الكل*",
+                f"⚠️ أنت على وشك بيع `{len(positions)}` مركز\n\n"
+                f"هل أنت متأكد؟"),
+            reply_markup=markup,
+            parse_mode='Markdown')
     
     elif text == "📈 الإحصائيات":
-        today = datetime.now().date()
+        win_rate = (stats['winning_trades'] / stats['total_trades'] * 100) if stats['total_trades'] > 0 else 0
+        
         bot.send_message(msg.chat.id,
-            format_message("📈 إحصائيات",
-                f"💰 الرصيد الحالي: {get_balance():.2f} USDT\n"
-                f"📊 المراكز المفتوحة: {len(positions)}\n"
-                f"🎯 أقصى مراكز: {MAX_POSITIONS}\n"
-                f"💵 قيمة الصفقة: {FIXED_TRADE_USDT}$\n"
-                f"📅 تاريخ التشغيل: {today}"))
+            format_message("📈 *الإحصائيات*",
+                f"📊 إجمالي الصفقات: `{stats['total_trades']}`\n"
+                f"✅ صفقات رابحة: `{stats['winning_trades']}`\n"
+                f"❌ صفقات خاسرة: `{stats['losing_trades']}`\n"
+                f"📈 نسبة الفوز: `{win_rate:.1f}%`\n"
+                f"💰 الربح الكلي: `{stats['total_profit']:.2f}$`\n"
+                f"💵 الربح الحالي: `{total_pnl:.2f}$`"),
+            parse_mode='Markdown')
+    
+    elif text == "📜 السجل":
+        if not trade_history:
+            bot.send_message(msg.chat.id,
+                format_message("📜 *سجل الصفقات*", "📭 لا توجد صفقات سابقة"))
+            return
+        
+        history_text = "```\n"
+        history_text += f"{'#':<3} {'العملة':<8} {'الربح':<10} {'الوقت':<8}\n"
+        history_text += "─" * 35 + "\n"
+        
+        for i, trade in enumerate(list(trade_history)[-10:], 1):
+            time_str = trade['timestamp'].strftime("%H:%M")
+            profit_str = f"{trade['profit_pct']:>+6.1f}%"
+            history_text += f"{i:<3} {trade['symbol']:<8} {profit_str:<10} {time_str:<8}\n"
+        
+        history_text += "```"
+        
+        bot.send_message(msg.chat.id,
+            format_message("📜 *آخر 10 صفقات*", history_text),
+            parse_mode='Markdown')
     
     elif text == "⏸ إيقاف/تشغيل":
         bot_running = not bot_running
         status = "✅ يعمل" if bot_running else "⏸ متوقف"
         bot.send_message(msg.chat.id,
-            format_message("الحالة", status))
+            format_message("⏸ *الحالة*", f"البوت الآن: `{status}`"),
+            parse_mode='Markdown')
 
-# ================== تشغيل البوت ==================
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    """معالجة الأزرار"""
+    if call.message.chat.id != USER_ID:
+        return
+    
+    if call.data == "sell_all_confirm":
+        count = 0
+        for symbol in list(positions.keys()):
+            try:
+                ticker = exchange.fetch_ticker(f"{symbol}/USDT")
+                size = positions[symbol]['size']
+                success, _, _ = execute_sell(symbol, ticker['last'], size, "emergency")
+                if success:
+                    count += 1
+            except Exception as e:
+                print(f"Emergency Sell Error {symbol}: {e}")
+        
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=format_message("✅ *تم البيع*",
+                f"تم بيع `{count}` مركز من `{len(positions) + count}`\n"
+                f"💰 الربح المتراكم: `{total_pnl:.2f}$`"),
+            parse_mode='Markdown'
+        )
+    
+    elif call.data == "sell_all_cancel":
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=format_message("❌ *إلغاء*", "تم إلغاء عملية البيع"),
+            parse_mode='Markdown'
+        )
+
+# ================== 🚀 تشغيل البوت ==================
 if __name__ == "__main__":
     print("=" * 60)
-    print("🚀 ULTIMATE TRADING BOT 3M")
+    print("🚀 ULTIMATE TRADING BOT 3M - MODERN EDITION")
     print("=" * 60)
     print("✅ البوت يعمل من خلال تليجرام فقط")
     print(f"💰 صفقة: {FIXED_TRADE_USDT}$")
     print(f"🎯 أقصى مراكز: {MAX_POSITIONS}")
     print(f"📊 العملات: {len(COINS)} عملة")
+    print(f"⏱ الفريم: {TIMEFRAME}")
+    print(f"🛡 الحد الأدنى: {MIN_BALANCE}$")
     print("=" * 60)
     print("👨‍💻 أرسل /start في تليجرام")
     print("=" * 60)
@@ -366,4 +535,8 @@ if __name__ == "__main__":
     threading.Thread(target=scanner, daemon=True).start()
     
     # تشغيل البوت
-    bot.infinity_polling()
+    try:
+        bot.infinity_polling(timeout=60, long_polling_timeout=60)
+    except Exception as e:
+        print(f"Bot Error: {e}")
+        time.sleep(5)
