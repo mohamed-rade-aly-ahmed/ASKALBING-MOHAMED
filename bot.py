@@ -2,244 +2,215 @@ import os
 import ccxt
 import telebot
 import pandas as pd
-import numpy as np
 import time
-import json
 import threading
-import csv
-from datetime import datetime
 
 # ================== ENV ==================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-MEXC_API_KEY = os.getenv("MEXC_API_KEY")
-MEXC_SECRET = os.getenv("MEXC_SECRET")
-MY_USER_ID = int(os.getenv("MY_USER_ID"))
+API_KEY = os.getenv("MEXC_API_KEY")
+SECRET = os.getenv("MEXC_SECRET")
+USER_ID = int(os.getenv("MY_USER_ID"))
 
-if not all([TELEGRAM_TOKEN, MEXC_API_KEY, MEXC_SECRET, MY_USER_ID]):
-    raise ValueError("تأكد من ضبط GitHub Secrets")
+if not all([TELEGRAM_TOKEN, API_KEY, SECRET, USER_ID]):
+    raise Exception("❌ تأكد من ضبط متغيرات البيئة")
 
+# ================== SETTINGS ==================
+TIMEFRAME = '3m'
+FIXED_TRADE_USDT = 5
+MAX_POSITIONS = 10
+
+COINS = [   # مختصرة لتجنب Rate Limit
+"BTC","ETH","SOL","ADA","AVAX","MATIC","NEAR","INJ","ARB","OP",
+"SUI","APT","SEI","TIA","FET","RNDR","AGIX","OCEAN","IMX","STX",
+"PEPE","BONK","WIF","ORDI","PYTH","JUP","ONDO","PENDLE"
+]
+
+# ================== TELEGRAM ==================
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
+# ================== EXCHANGE ==================
 exchange = ccxt.mexc({
-    'apiKey': MEXC_API_KEY,
-    'secret': MEXC_SECRET,
+    'apiKey': API_KEY,
+    'secret': SECRET,
     'enableRateLimit': True,
     'options': {'defaultType': 'spot'}
 })
 
 exchange.load_markets()
 
-# ================== SETTINGS ==================
-RISK_PER_TRADE = 0.01
-STOP_LOSS_PERCENT = 10
-MAX_OPEN_POSITIONS = 5
-COOLDOWN = 1800
-TARGETS = [1,2,3,5]
-TIMEFRAME = '5m'
-KILL_SWITCH_DAILY_LOSS = -5
-MIN_BALANCE = 20
+positions = {}
 
-halal_coins = [
-    'BTC','ETH','XRP','ADA','SOL','DOT','LINK','MATIC','AVAX','UNI',
-    'ATOM','ALGO','VET','FIL','ICP','NEAR','APT','ARB','OP','SUI'
-]
+# ================== UI ==================
+def box(title, body):
+    return f"""
+╔══════════════════════╗
+║   🚀 {title}
+╠══════════════════════╣
+{body}
+╚══════════════════════╝
+"""
 
-positions_file = "positions.json"
-trades_file = "trades.csv"
-lock = threading.Lock()
-last_trade_time = {}
-daily_pnl = 0
+# ================== MARKET FILTER ==================
+def market_safe():
+    try:
+        ohlcv = exchange.fetch_ohlcv("BTC/USDT", '5m', limit=50)
+        df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
+        df['ema200'] = df['c'].ewm(span=200).mean()
+        return df.iloc[-1].c > df.iloc[-1].ema200
+    except:
+        return False
 
-# ================== STORAGE ==================
-def load_positions():
-    if os.path.exists(positions_file):
-        with open(positions_file,'r') as f:
-            return json.load(f)
-    return {}
+# ================== MOMENTUM SCORE ==================
+def momentum_score(symbol):
+    try:
+        ohlcv = exchange.fetch_ohlcv(f"{symbol}/USDT", TIMEFRAME, limit=30)
+        df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
 
-def save_positions(data):
-    with open(positions_file,'w') as f:
-        json.dump(data,f,indent=2)
+        change = ((df['c'].iloc[-1] - df['c'].iloc[-3]) / df['c'].iloc[-3]) * 100
+        vol_spike = df['v'].iloc[-1] / df['v'].rolling(20).mean().iloc[-1]
 
-active_positions = load_positions()
+        score = change * vol_spike
+        return score
+    except:
+        return 0
 
-# ================== LOGGER ==================
-def log_trade(symbol, side, price, amount, profit=0):
-    file_exists = os.path.isfile(trades_file)
-    with open(trades_file,'a',newline='') as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(["date","symbol","side","price","amount","profit"])
-        writer.writerow([datetime.now(),symbol,side,price,amount,profit])
+# ================== ENTRY ==================
+def try_enter(symbol):
+    try:
+        ticker = exchange.fetch_ticker(f"{symbol}/USDT")
+        price = ticker['last']
 
-# ================== INDICATORS ==================
-def indicators(ohlcv):
-    df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
+        amount = FIXED_TRADE_USDT / price
+        market = exchange.market(f"{symbol}/USDT")
+        min_amount = market['limits']['amount']['min']
 
-    df['ema_fast'] = df['c'].ewm(span=3).mean()
-    df['ema_slow'] = df['c'].ewm(span=8).mean()
-    df['macd'] = df['ema_fast'] - df['ema_slow']
-    df['signal'] = df['macd'].ewm(span=3).mean()
+        if amount < min_amount:
+            return
 
-    delta = df['c'].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
-    rs = avg_gain / avg_loss
-    df['rsi'] = 100 - (100 / (1 + rs))
+        exchange.create_market_buy_order(f"{symbol}/USDT", amount)
 
-    df['vol_avg'] = df['v'].rolling(20).mean()
-    return df
+        sl = price * 0.97
+        tp = price * 1.06
 
-def btc_trend():
-    ohlcv = exchange.fetch_ohlcv("BTC/USDT", TIMEFRAME, limit=50)
-    df = indicators(ohlcv)
-    return df.iloc[-1].macd > df.iloc[-1].signal
+        positions[symbol] = {
+            "entry": price,
+            "sl": sl,
+            "tp": tp,
+            "size": amount
+        }
 
-def check_signal(symbol):
-    ohlcv = exchange.fetch_ohlcv(f"{symbol}/USDT", TIMEFRAME, limit=50)
-    df = indicators(ohlcv)
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
+        bot.send_message(USER_ID,
+            box("BUY ✅",
+                f"{symbol}\nEntry: {price:.4f}\nSL: {sl:.4f}\nTP: {tp:.4f}"))
 
-    macd_cross = prev.macd <= prev.signal and last.macd > last.signal
-    rsi_ok = last.rsi > 50
-    volume_ok = last.v > last.vol_avg
-
-    return macd_cross and rsi_ok and volume_ok
-
-# ================== RISK ==================
-def position_size(usdt_balance):
-    risk_amount = usdt_balance * RISK_PER_TRADE
-    value = risk_amount / (STOP_LOSS_PERCENT/100)
-    return value
-
-def min_amount(symbol):
-    return exchange.market(f"{symbol}/USDT")['limits']['amount']['min']
+    except Exception as e:
+        print("Entry Error:", e)
 
 # ================== MONITOR ==================
 def monitor():
-    global daily_pnl
     while True:
         try:
-            with lock:
-                for symbol,pos in list(active_positions.items()):
-                    ticker = exchange.fetch_ticker(f"{symbol}/USDT")
-                    price = ticker['last']
-                    entry = pos['entry']
-                    size = pos['size']
-                    profit = ((price-entry)/entry)*100
+            for symbol in list(positions.keys()):
+                ticker = exchange.fetch_ticker(f"{symbol}/USDT")
+                price = ticker['last']
 
-                    if profit <= -STOP_LOSS_PERCENT:
-                        exchange.create_market_sell_order(f"{symbol}/USDT", size)
-                        pnl = (price-entry)*size
-                        daily_pnl += pnl
-                        log_trade(symbol,"SELL",price,size,pnl)
-                        del active_positions[symbol]
-                        save_positions(active_positions)
-                        bot.send_message(MY_USER_ID,f"🛑 SL {symbol} {profit:.2f}%")
-                        continue
+                entry = positions[symbol]['entry']
+                sl = positions[symbol]['sl']
+                tp = positions[symbol]['tp']
+                size = positions[symbol]['size']
 
-                    for target in TARGETS:
-                        if target not in pos['targets'] and profit >= target:
-                            sell_size = pos['size']*0.25
-                            if sell_size < min_amount(symbol):
-                                continue
-                            exchange.create_market_sell_order(f"{symbol}/USDT", sell_size)
-                            pos['size'] -= sell_size
-                            pos['targets'].append(target)
-                            save_positions(active_positions)
-                            bot.send_message(MY_USER_ID,f"🎯 {symbol} {target}%")
-                    
-                    if len(pos['targets'])==4 and profit<2:
-                        exchange.create_market_sell_order(f"{symbol}/USDT", pos['size'])
-                        pnl = (price-entry)*pos['size']
-                        daily_pnl += pnl
-                        log_trade(symbol,"SELL",price,pos['size'],pnl)
-                        del active_positions[symbol]
-                        save_positions(active_positions)
-                        bot.send_message(MY_USER_ID,f"🔒 Trailing Exit {symbol}")
+                profit = ((price - entry) / entry) * 100
+
+                # Trailing
+                if profit >= 2:
+                    positions[symbol]['sl'] = entry * 1.01
+                if profit >= 4:
+                    positions[symbol]['sl'] = entry * 1.03
+
+                # Exit
+                if price <= positions[symbol]['sl'] or price >= tp:
+                    exchange.create_market_sell_order(f"{symbol}/USDT", size)
+                    del positions[symbol]
+
+                    bot.send_message(USER_ID,
+                        box("EXIT ✅",
+                            f"{symbol}\nExit: {price:.4f}\nProfit: {profit:.2f}%"))
 
         except Exception as e:
-            print("Monitor Error:",e)
+            print("Monitor Error:", e)
 
-        time.sleep(10)
+        time.sleep(5)
 
 # ================== SCANNER ==================
 def scanner():
-    global daily_pnl
     while True:
         try:
-            if daily_pnl <= KILL_SWITCH_DAILY_LOSS:
-                time.sleep(60)
+            if len(positions) >= MAX_POSITIONS:
+                time.sleep(10)
                 continue
 
-            if not btc_trend():
-                time.sleep(60)
+            if not market_safe():
+                time.sleep(10)
                 continue
 
-            if len(active_positions) >= MAX_OPEN_POSITIONS:
-                time.sleep(60)
-                continue
+            scores = []
 
-            balance = exchange.fetch_balance()
-            usdt = balance['free'].get('USDT',0)
-            if usdt < MIN_BALANCE:
-                time.sleep(60)
-                continue
-
-            for coin in halal_coins:
-                if coin in active_positions:
+            for coin in COINS:
+                if coin in positions:
                     continue
+                score = momentum_score(coin)
+                scores.append((coin, score))
 
-                now = time.time()
-                if coin in last_trade_time and now-last_trade_time[coin]<COOLDOWN:
-                    continue
+            scores.sort(key=lambda x: x[1], reverse=True)
+            top_coins = [c[0] for c in scores[:3]]
 
-                if check_signal(coin):
-                    value = position_size(usdt)
-                    ticker = exchange.fetch_ticker(f"{coin}/USDT")
-                    price = ticker['last']
-                    amount = value/price
-
-                    if amount < min_amount(coin):
-                        continue
-
-                    exchange.create_market_buy_order(f"{coin}/USDT", amount)
-
-                    active_positions[coin]={
-                        "entry":price,
-                        "size":amount,
-                        "targets":[]
-                    }
-                    save_positions(active_positions)
-                    log_trade(coin,"BUY",price,amount)
-                    last_trade_time[coin]=time.time()
-
-                    bot.send_message(MY_USER_ID,f"🟢 BUY {coin} @ {price}")
+            for coin in top_coins:
+                if len(positions) >= MAX_POSITIONS:
+                    break
+                try_enter(coin)
 
         except Exception as e:
-            print("Scanner Error:",e)
+            print("Scanner Error:", e)
 
-        time.sleep(60)
+        time.sleep(15)
 
-# ================== TELEGRAM ==================
+# ================== TELEGRAM COMMANDS ==================
 @bot.message_handler(commands=['start'])
 def start(msg):
-    if msg.chat.id!=MY_USER_ID: return
-    bot.send_message(msg.chat.id,"✅ Elite Bot Running")
+    if msg.chat.id != USER_ID:
+        return
 
-@bot.message_handler(commands=['status'])
-def status(msg):
-    if msg.chat.id!=MY_USER_ID: return
-    balance = exchange.fetch_balance()['free'].get('USDT',0)
-    bot.send_message(msg.chat.id,
-        f"💰 {balance:.2f} USDT\n📈 Positions: {len(active_positions)}\n📊 Daily PnL: {daily_pnl:.2f}")
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("📊 الحالة", "🚨 بيع الكل")
 
-# ================== START ==================
-if __name__=="__main__":
-    print("🚀 Elite Trading Bot Running...")
-    threading.Thread(target=monitor,daemon=True).start()
-    threading.Thread(target=scanner,daemon=True).start()
+    bot.send_message(USER_ID,
+        box("ULTRA MOMENTUM 3M",
+            "✅ النظام يعمل\n⚡ سكالب هجومي"),
+        reply_markup=markup)
+
+@bot.message_handler(func=lambda m: True)
+def commands(msg):
+    if msg.chat.id != USER_ID:
+        return
+
+    if msg.text == "📊 الحالة":
+        bot.send_message(USER_ID,
+            box("الحالة",
+                f"المراكز المفتوحة: {len(positions)}"))
+
+    if msg.text == "🚨 بيع الكل":
+        for symbol in list(positions.keys()):
+            size = positions[symbol]['size']
+            exchange.create_market_sell_order(f"{symbol}/USDT", size)
+            del positions[symbol]
+
+        bot.send_message(USER_ID,
+            box("🚨 طوارئ",
+                "تم بيع جميع المراكز"))
+
+# ================== RUN ==================
+if __name__ == "__main__":
+    print("🚀 ULTRA BOT RUNNING...")
+    threading.Thread(target=monitor, daemon=True).start()
+    threading.Thread(target=scanner, daemon=True).start()
     bot.infinity_polling()
